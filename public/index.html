@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>容器二维码管理</title>
+  <style>
+    :root { --line:#e5e7eb; --muted:#6b7280; --brand:#2563eb; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 760px; margin: 0 auto;
+           padding: 24px 16px 64px; background:#f9fafb; color:#111827; }
+    h1 { font-size: 20px; margin: 0 0 16px; }
+    h1 .nav { font-size: 13px; font-weight: 400; margin-left: 8px; }
+    h2 { font-size: 15px; margin: 0 0 10px; }
+    code { background:#eef2ff; color:#3730a3; padding: 2px 6px; border-radius: 4px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:14px; }
+    .muted { color: var(--muted); font-size: 13px; margin: 8px 0 0; line-height: 1.6; }
+    .row { display:flex; gap:8px; flex-wrap: wrap; }
+    .row input { flex:1 1 220px; padding:10px; font-size:15px; border:1px solid var(--line); border-radius:8px; }
+    button { padding:11px 16px; font-size:15px; border-radius:8px; border:1px solid transparent;
+             background:var(--brand); color:#fff; cursor:pointer; }
+    button.ghost { background:#fff; color:#374151; border-color:var(--line); }
+    .actions { display:flex; gap:10px; align-items:center; margin-top: 14px; flex-wrap: wrap; }
+    .link { color: var(--brand); font-size: 14px; }
+    /* 标签 */
+    .label { display:inline-block; text-align:center; border:2px solid #111827; border-radius:8px;
+             padding:14px 18px; background:#fff; }
+    .label-head { font-size: 13px; letter-spacing: 2px; color:#374151; }
+    .label-code { font-size: 24px; font-weight: 700; letter-spacing: 3px; margin-top: 6px;
+                  font-family: ui-monospace, Consolas, monospace; }
+    .label-foot { font-size: 11px; color:#6b7280; margin-top: 4px; }
+    #qr img { display:block; margin: 8px auto; }
+    /* 容器列表 */
+    table { width:100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+    th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align: middle; }
+    th { color: var(--muted); font-weight: 500; font-size: 13px; }
+    td.mono { font-family: ui-monospace, Consolas, monospace; }
+    td button, td .link { padding: 5px 10px; font-size: 13px; margin-right: 6px; }
+    @media print {
+      body > *:not(#labelWrap) { display: none !important; }
+      body { background:#fff; margin:0; padding:16px; max-width:none; }
+      #labelWrap { border:none; padding:0; margin:0; }
+      #labelWrap .actions, #labelUrl { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <h1>容器二维码管理
+    <a class="link nav" href="/fields.html">字段配置 →</a>
+  </h1>
+
+  <section class="card">
+    <h2>① 新建容器</h2>
+    <p class="muted">系统生成一个永久短码（生成后不会变），打印成标签贴在容器上。之后每次扫这个标签，
+      都能往容器里写产品信息、或读出当前信息。</p>
+    <div class="actions">
+      <button id="create">新建容器并出标签</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>② 补打标签</h2>
+    <p class="muted">标签磨损或丢失时，输入短码重新生成二维码，容器里的数据不受影响。</p>
+    <div class="row">
+      <input id="codeInput" placeholder="输入容器短码，例如 V1StGXR8" autocapitalize="off" spellcheck="false">
+      <button id="reprint" class="ghost">生成标签</button>
+    </div>
+    <p class="muted" id="reprintMsg"></p>
+  </section>
+
+  <section class="card" id="labelWrap" hidden>
+    <div class="label">
+      <div class="label-head">容器二维码</div>
+      <div id="qr"></div>
+      <div class="label-code" id="labelCode"></div>
+      <div class="label-foot">扫码录入 / 查看产品信息</div>
+    </div>
+    <div class="actions">
+      <button id="print">打印标签</button>
+      <a class="link" id="openLink" target="_blank" rel="noreferrer">打开扫码页</a>
+    </div>
+    <p class="muted" id="labelUrl"></p>
+  </section>
+
+  <section class="card">
+    <h2>③ 最近创建的容器</h2>
+    <button id="refresh" class="ghost">刷新</button>
+    <div id="list"><p class="muted">加载中…</p></div>
+  </section>
+
+  <script src="/vendor/qrcode/qrcode.js"></script>
+  <script type="module">
+    const qrcode = globalThis.qrcode;
+    const $ = (id) => document.getElementById(id);
+
+    let bases = [location.origin]; // 标签里使用的地址，第一个最优（局域网地址优先）
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    let fields = []; // 当前字段定义：列表第二列跟着它的第一个字段走
+
+    // 手机上扫码必须用局域网地址；服务端会按当前访问方式给出一组候选地址
+    async function loadBases() {
+      try {
+        const res = await fetch('/api/server');
+        const data = await res.json();
+        if (Array.isArray(data.bases) && data.bases.length) bases = data.bases;
+      } catch {
+        // 拿不到就用当前地址
+      }
+    }
+
+    async function loadFields() {
+      try {
+        const res = await fetch('/api/fields');
+        if (res.ok) fields = (await res.json()).fields;
+      } catch {
+        // 拿不到就退化成 —，列表照常显示
+      }
+    }
+
+    function showLabel(code) {
+      const url = `${bases[0]}/q/${code}`;
+
+      const qr = qrcode(0, 'M');
+      qr.addData(url);
+      qr.make();
+      $('qr').innerHTML = qr.createImgTag(5, 6);
+
+      $('labelCode').textContent = code;
+      $('openLink').href = url;
+      $('labelUrl').textContent =
+        `标签地址：${url}` + (bases.length > 1 ? `（其它可用地址：${bases.slice(1).join('、')}）` : '');
+
+      const wrap = $('labelWrap');
+      wrap.hidden = false;
+      wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    async function createContainer() {
+      const btn = $('create');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/containers', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || '创建失败');
+        showLabel(data.code);
+        loadList();
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function reprint() {
+      const code = $('codeInput').value.trim();
+      const msg = $('reprintMsg');
+      if (!code) {
+        msg.textContent = '请输入容器短码';
+        return;
+      }
+      const res = await fetch(`/api/containers/${encodeURIComponent(code)}`);
+      if (res.status === 404) {
+        msg.textContent = '❌ 没有这个容器';
+        return;
+      }
+      if (!res.ok) {
+        msg.textContent = '❌ 读取失败，请稍后重试';
+        return;
+      }
+      msg.textContent = '';
+      showLabel(code);
+    }
+
+    async function loadList() {
+      const list = $('list');
+      const res = await fetch('/api/containers?limit=20');
+      if (!res.ok) {
+        list.replaceChildren(el('p', 'muted', '加载失败'));
+        return;
+      }
+      const { containers } = await res.json();
+      if (!containers.length) {
+        list.replaceChildren(el('p', 'muted', '还没有容器，先在上面新建一个。'));
+        return;
+      }
+
+      const table = document.createElement('table');
+      // 第二列跟随字段定义里的第一个字段（字段配置改了，这里也跟着变）
+      const primary = fields[0];
+      const thead = document.createElement('thead');
+      const head = document.createElement('tr');
+      for (const text of ['短码', primary?.label || '(首个字段)', '记录数', '最后更新', '操作']) {
+        head.appendChild(el('th', null, text));
+      }
+      thead.appendChild(head);
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      for (const c of containers) {
+        const tr = document.createElement('tr');
+        tr.appendChild(el('td', 'mono', c.code));
+        tr.appendChild(el('td', null, c.latest?.data?.[primary?.key] || '—'));
+        tr.appendChild(el('td', null, String(c.record_count)));
+        tr.appendChild(el('td', null, c.updated_at));
+
+        const ops = el('td');
+        const labelBtn = el('button', 'ghost', '出标签');
+        labelBtn.onclick = () => showLabel(c.code);
+        const open = el('a', 'link', '打开');
+        open.href = `${bases[0]}/q/${c.code}`;
+        open.target = '_blank';
+        open.rel = 'noreferrer';
+        ops.append(labelBtn, open);
+        tr.appendChild(ops);
+
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      list.replaceChildren(table);
+    }
+
+    $('create').onclick = createContainer;
+    $('reprint').onclick = reprint;
+    $('print').onclick = () => window.print();
+    $('refresh').onclick = loadList;
+    $('codeInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') reprint();
+    });
+
+    (async () => {
+      await loadBases();
+      await loadFields();
+      await loadList();
+    })();
+  </script>
+</body>
+</html>

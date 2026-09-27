@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>字段配置</title>
+  <style>
+    :root { --line:#e5e7eb; --muted:#6b7280; --brand:#2563eb; --danger:#dc2626; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 1060px; margin: 0 auto;
+           padding: 24px 16px 64px; background:#f9fafb; color:#111827; }
+    h1 { font-size: 20px; margin: 0 0 16px; }
+    h1 .nav { font-size: 13px; font-weight: 400; margin-left: 8px; }
+    h2 { font-size: 15px; margin: 0 0 8px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:14px; }
+    .muted { color: var(--muted); font-size: 13px; margin: 8px 0 0; line-height: 1.7; }
+    .msg { font-size: 13px; color: var(--brand); }
+    .msg.err { color: var(--danger); }
+    .actions { display:flex; gap:10px; align-items:center; flex-wrap: wrap; margin-top: 14px; }
+    button { padding:10px 16px; font-size:14px; border-radius:8px; border:1px solid transparent;
+             background:var(--brand); color:#fff; cursor:pointer; font-family: inherit; }
+    button.ghost { background:#fff; color:#374151; border-color:var(--line); }
+    button.danger { background:#fff; color:var(--danger); border-color:#fecaca; }
+    button.icon { padding:5px 9px; font-size:13px; }
+    button:disabled { opacity:.45; cursor:default; }
+
+    /* 字段行 */
+    .frow { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:10px;
+            display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; background:#fff; }
+    .frow .ctrl { display:flex; flex-direction:column; gap:4px; }
+    .frow .ctrl > span { font-size:12px; color:var(--muted); }
+    .frow input[type="text"], .frow input[type="number"], .frow select {
+      padding:7px 9px; font-size:14px; border:1px solid var(--line); border-radius:6px;
+      font-family: inherit; color: inherit; background:#fff; }
+    .w-label { width: 130px; } .w-key { width: 150px; } .w-type { width: 118px; }
+    .w-options { flex: 1 1 240px; } .w-default { width: 96px; } .w-max { width: 86px; }
+    .w-ph { flex: 1 1 170px; }
+    .frow .chk { display:flex; align-items:center; gap:6px; padding-bottom:9px; font-size:13px; color:#374151; }
+    .frow .ops { margin-left:auto; display:flex; gap:6px; }
+
+    /* form.js 渲染出来的表单（预览用） */
+    .form .field { margin-bottom: 12px; }
+    .form label { display:block; font-size:13px; color:#374151; margin-bottom:4px; }
+    .form input, .form select, .form textarea { width:100%; max-width:420px; padding:9px; font-size:15px;
+      border:1px solid var(--line); border-radius:8px; font-family: inherit; color: inherit; background:#fff; }
+    .form textarea { max-width: 100%; }
+  </style>
+</head>
+<body>
+  <h1>字段配置
+    <a class="link nav" href="/">← 回到容器管理</a>
+  </h1>
+
+  <section class="card">
+    <p class="muted">
+      这里定义扫码页表单上有哪些字段。保存后<b>立即生效</b>（不需要重启）：手机扫码、或刷新扫码页就是新表单。
+      改了某个字段的 <b>key</b> 等于「删掉旧字段 + 建一个新字段」，历史记录里旧字段的值会以
+      <i style="color:#9ca3af">key（已移除字段）</i> 的形式继续显示，不会丢。
+    </p>
+    <div class="actions">
+      <button id="add" class="ghost">+ 新增字段</button>
+      <button id="save">保存并生效</button>
+      <button id="reset" class="ghost">恢复默认字段</button>
+      <span id="msg" class="msg"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>字段列表（顺序就是表单顺序）</h2>
+    <div id="rows"></div>
+  </section>
+
+  <section class="card">
+    <h2>表单预览</h2>
+    <p class="muted">下面是扫码页会显示的样子，只是预览；点「保存并生效」后才会真正生效。</p>
+    <div id="preview"></div>
+  </section>
+
+  <script type="module">
+    import { renderForm } from '/form.js';
+
+    const $ = (id) => document.getElementById(id);
+    const TYPES = [
+      ['text', '单行文本'],
+      ['textarea', '多行文本'],
+      ['number', '数字'],
+      ['date', '日期'],
+      ['select', '下拉选择'],
+    ];
+
+    let draft = [];      // 正在编辑的字段定义
+    let timer = null;    // 预览防抖
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function setMsg(text, isError = false) {
+      const box = $('msg');
+      box.textContent = text;
+      box.className = isError ? 'msg err' : 'msg';
+    }
+
+    const inputValue = (v) => (v === null || v === undefined ? '' : String(v));
+
+    function ctrl(labelText, prop, cls, { type = 'text', value = '', placeholder = '' } = {}) {
+      const box = el('div', `ctrl ${cls}`);
+      box.appendChild(el('span', null, labelText));
+      const input = document.createElement('input');
+      input.type = type;
+      input.dataset.prop = prop;
+      input.value = inputValue(value);
+      if (placeholder) input.placeholder = placeholder;
+      box.appendChild(input);
+      return box;
+    }
+
+    function renderRows() {
+      const rows = $('rows');
+      rows.replaceChildren();
+
+      if (!draft.length) {
+        rows.appendChild(el('p', 'muted', '还没有字段，点上面的「+ 新增字段」开始。'));
+        return;
+      }
+
+      draft.forEach((f, idx) => {
+        const row = el('div', 'frow');
+        row.dataset.idx = String(idx);
+
+        row.appendChild(ctrl('显示名', 'label', 'w-label', { value: f.label, placeholder: '例如：品名' }));
+        row.appendChild(ctrl('key（英文）', 'key', 'w-key', { value: f.key, placeholder: '例如：name' }));
+
+        const typeBox = el('div', 'ctrl w-type');
+        typeBox.appendChild(el('span', null, '类型'));
+        const select = document.createElement('select');
+        select.dataset.prop = 'type';
+        for (const [value, text] of TYPES) {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = text;
+          select.appendChild(option);
+        }
+        select.value = f.type;
+        typeBox.appendChild(select);
+        row.appendChild(typeBox);
+
+        const chk = el('div', 'chk');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.dataset.prop = 'required';
+        checkbox.checked = !!f.required;
+        chk.append(checkbox, el('span', null, '必填'));
+        row.appendChild(chk);
+
+        if (f.type === 'select') {
+          row.appendChild(ctrl('选项（逗号分隔）', 'options', 'w-options',
+            { value: (f.options || []).join(','), placeholder: '件,箱,袋' }));
+        }
+
+        row.appendChild(ctrl('默认值', 'default', 'w-default', { value: f.default }));
+        row.appendChild(ctrl('最大长度', 'maxLength', 'w-max', { type: 'number', value: f.maxLength }));
+        row.appendChild(ctrl('输入提示', 'placeholder', 'w-ph', { value: f.placeholder }));
+
+        const ops = el('div', 'ops');
+        const up = el('button', 'ghost icon', '↑');
+        up.type = 'button';
+        up.dataset.act = 'up';
+        up.title = '上移';
+        up.disabled = idx === 0;
+        const down = el('button', 'ghost icon', '↓');
+        down.type = 'button';
+        down.dataset.act = 'down';
+        down.title = '下移';
+        down.disabled = idx === draft.length - 1;
+        const del = el('button', 'danger icon', '删除');
+        del.type = 'button';
+        del.dataset.act = 'del';
+        ops.append(up, down, del);
+        row.appendChild(ops);
+
+        rows.appendChild(row);
+      });
+    }
+
+    function schedule() {
+      clearTimeout(timer);
+      timer = setTimeout(renderPreview, 150);
+    }
+
+    function renderPreview() {
+      const box = $('preview');
+      if (!box) return; // 防抖定时器可能晚一步触发，此时页面已不是配置页
+      box.replaceChildren();
+      const usable = draft.filter((f) => f.key && f.label);
+      if (!usable.length) {
+        box.appendChild(el('p', 'muted', '还没有可预览的字段（每个字段都要有显示名和 key）。'));
+        return;
+      }
+      renderForm(box, usable, {}); // 不传 onSubmit：只渲染控件，没有保存按钮
+    }
+
+    const rowIndexOf = (node) => Number(node.closest('.frow').dataset.idx);
+
+    $('rows').addEventListener('input', (e) => {
+      const input = e.target;
+      const prop = input.dataset.prop;
+      if (!prop || prop === 'type' || prop === 'required') return;
+      const f = draft[rowIndexOf(input)];
+      if (prop === 'options') {
+        f.options = input.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+      } else {
+        f[prop] = input.value;
+      }
+      schedule();
+    });
+
+    $('rows').addEventListener('change', (e) => {
+      const input = e.target;
+      const prop = input.dataset.prop;
+      if (prop === 'type') {
+        draft[rowIndexOf(input)].type = input.value;
+        renderRows(); // 下拉字段才有「选项」输入框，需要重排
+        schedule();
+      } else if (prop === 'required') {
+        draft[rowIndexOf(input)].required = input.checked;
+        schedule();
+      }
+    });
+
+    $('rows').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const idx = rowIndexOf(btn);
+      const act = btn.dataset.act;
+
+      if (act === 'up' && idx > 0) {
+        [draft[idx - 1], draft[idx]] = [draft[idx], draft[idx - 1]];
+      } else if (act === 'down' && idx < draft.length - 1) {
+        [draft[idx + 1], draft[idx]] = [draft[idx], draft[idx + 1]];
+      } else if (act === 'del') {
+        draft.splice(idx, 1);
+      } else {
+        return;
+      }
+      renderRows();
+      schedule();
+    });
+
+    async function save() {
+      const btn = $('save');
+      btn.disabled = true;
+      setMsg('保存中…');
+      try {
+        const res = await fetch('/api/fields', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fields: draft }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setMsg(`❌ ${body.error || '保存失败'}`, true);
+          return;
+        }
+        draft = body.fields.map((f) => ({ ...f }));
+        renderRows();
+        renderPreview();
+        setMsg(`✅ 已保存 ${draft.length} 个字段，已即时生效（扫码页刷新即可看到新表单）`);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    $('add').onclick = () => {
+      draft.push({ key: '', label: '', type: 'text', required: false, options: [], default: '', maxLength: null, placeholder: '' });
+      renderRows();
+      schedule();
+    };
+
+    $('reset').onclick = async () => {
+      const res = await fetch('/api/fields/defaults');
+      const body = await res.json();
+      draft = body.fields.map((f) => ({ ...f }));
+      renderRows();
+      renderPreview();
+      setMsg('已载入默认字段，点「保存并生效」后才会真正生效');
+    };
+
+    $('save').onclick = save;
+
+    async function load() {
+      const res = await fetch('/api/fields');
+      const body = await res.json();
+      draft = body.fields.map((f) => ({ ...f }));
+      renderRows();
+      renderPreview();
+    }
+
+    load();
+  </script>
+</body>
+</html>

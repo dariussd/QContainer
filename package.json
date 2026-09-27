@@ -1,0 +1,17 @@
+{
+  "name": "qr-backend",
+  "version": "1.0.0",
+  "description": "容器二维码：固定短码印在容器上，扫码写入 / 读出产品信息，数据存后端并保留历史",
+  "type": "module",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "express": "^5.2.1",
+    "nanoid": "^6.0.1",
+    "qrcode-generator": "^2.0.4"
+  }
+}

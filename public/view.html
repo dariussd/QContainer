@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>容器扫码</title>
+  <style>
+    :root { --line:#e5e7eb; --muted:#6b7280; --brand:#2563eb; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 560px; margin: 0 auto;
+           padding: 16px 16px 48px; background:#f9fafb; color:#111827; }
+    header { padding: 4px 0 16px; }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    h2 { font-size: 15px; margin: 0 0 10px; }
+    code { background:#eef2ff; color:#3730a3; padding: 2px 6px; border-radius: 4px; font-size: 15px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:12px; }
+    .muted { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+    .error { background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; padding:10px 12px;
+             border-radius:8px; font-size:14px; margin:0 0 12px; }
+    .data { display:grid; grid-template-columns: 80px 1fr; gap:6px 10px; margin:0; font-size:15px; }
+    .data dt { color: var(--muted); font-size:13px; align-self:center; }
+    .data dd { margin:0; white-space:pre-wrap; word-break:break-word; }
+    .data dt.removed { color:#9ca3af; font-style: italic; }
+    .form .field { margin-bottom: 12px; }
+    .form label { display:block; font-size:13px; color:#374151; margin-bottom:4px; }
+    .form input, .form select, .form textarea { width:100%; padding:10px; font-size:16px;
+             border:1px solid var(--line); border-radius:8px; background:#fff; color:inherit; }
+    .actions { display:flex; gap:8px; }
+    button { flex:1; padding:12px 16px; font-size:15px; border-radius:8px; border:1px solid transparent;
+             background:var(--brand); color:#fff; cursor:pointer; }
+    button.ghost { background:#fff; color:#374151; border-color:var(--line); }
+    button:disabled { opacity:.6; cursor:default; }
+    details.history { margin-top: 4px; }
+    details.history summary { cursor:pointer; font-size:14px; color:var(--brand); margin:4px 0 10px; }
+    .rec-time { font-size:12px; color:var(--muted); margin-bottom:8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>容器 <code id="code">—</code></h1>
+    <p class="muted" id="sub">正在读取…</p>
+  </header>
+
+  <div id="app"></div>
+
+  <script type="module">
+    import { loadFields, renderForm, renderData } from '/form.js';
+
+    // /q/<短码> 或 /q/<短码>/ 都能取到短码
+    const code = location.pathname.split('/').filter(Boolean).pop() || '';
+    document.getElementById('code').textContent = code || '—';
+
+    const app = document.getElementById('app');
+    const sub = document.getElementById('sub');
+
+    let fields = [];
+    let state = null;      // 当前容器状态（最新一条 + 历史）
+    let editing = false;   // 是否处于填表状态
+    let errorBox = null;   // 表单上方的错误提示
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function showError(message) {
+      if (errorBox) {
+        errorBox.textContent = message;
+        errorBox.hidden = false;
+      }
+    }
+
+    async function boot() {
+      try {
+        fields = await loadFields();
+      } catch {
+        app.replaceChildren(el('p', 'error', '字段定义加载失败，请刷新重试。'));
+        return;
+      }
+      await reload();
+    }
+
+    async function reload() {
+      const res = await fetch(`/api/containers/${encodeURIComponent(code)}`);
+      if (res.status === 404) {
+        sub.textContent = '';
+        app.replaceChildren(
+          el('p', 'error', '❌ 这个二维码还没有注册为容器。请先在管理端新建容器，再打印它生成的二维码。')
+        );
+        return;
+      }
+      if (!res.ok) {
+        app.replaceChildren(el('p', 'error', '读取失败，请稍后重试。'));
+        return;
+      }
+      state = await res.json();
+      render();
+    }
+
+    function newErrorBox(parent) {
+      errorBox = el('p', 'error');
+      errorBox.hidden = true;
+      parent.appendChild(errorBox);
+      return errorBox;
+    }
+
+    function render() {
+      app.replaceChildren();
+      errorBox = null;
+
+      const latest = state.latest;
+
+      // 还没有数据：直接给空表单
+      if (!latest) {
+        sub.textContent = `共 0 条记录 · 容器创建于 ${state.created_at}`;
+        const box = el('section', 'card');
+        box.appendChild(el('h2', null, '录入产品信息'));
+        box.appendChild(el('p', 'muted', '填写后保存，数据就存在这个容器名下了。'));
+        newErrorBox(box);
+        renderForm(box, fields, {}, { onSave: save });
+        app.appendChild(box);
+        return;
+      }
+
+      sub.textContent = `共 ${state.record_count} 条记录 · 最后更新 ${latest.created_at}`;
+
+      // 最新一条：只读展示
+      const card = el('section', 'card');
+      card.appendChild(el('h2', null, '最新信息'));
+      renderData(card, fields, latest.data, { extras: latest.extra });
+      card.appendChild(el('p', 'muted', `录入时间：${latest.created_at}`));
+      app.appendChild(card);
+
+      // 更新：展开表单，预填最新一条，改完保存会新增一条记录
+      if (editing) {
+        const box = el('section', 'card');
+        box.appendChild(el('h2', null, '更新信息'));
+        box.appendChild(el('p', 'muted', `保存后会新增一条记录，当前 ${state.record_count} 条历史都会保留。`));
+        newErrorBox(box);
+        renderForm(box, fields, latest.data, {
+          onSave: save,
+          onCancel: () => { editing = false; render(); },
+        });
+        app.appendChild(box);
+      } else {
+        const actions = el('div', 'actions');
+        const btn = el('button', null, '更新信息');
+        btn.onclick = () => { editing = true; render(); };
+        actions.appendChild(btn);
+        app.appendChild(actions);
+      }
+
+      // 历史留痕：只展示，不可改
+      if (state.record_count > 1) {
+        const details = el('details', 'history');
+        details.appendChild(el('summary', null, `历史记录（共 ${state.record_count} 条）`));
+        for (const record of state.records) {
+          const item = el('section', 'card');
+          item.appendChild(el('div', 'rec-time', record.created_at));
+          renderData(item, fields, record.data, { extras: record.extra });
+          details.appendChild(item);
+        }
+        if (state.record_count > state.records.length) {
+          details.appendChild(
+            el('p', 'muted', `只显示最近 ${state.records.length} 条，较早的记录仍保存在数据库里。`)
+          );
+        }
+        app.appendChild(details);
+      }
+    }
+
+    async function save(data, { setBusy }) {
+      setBusy(true);
+      const res = await fetch(`/api/containers/${encodeURIComponent(code)}/records`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      const body = await res.json().catch(() => ({}));
+      setBusy(false);
+
+      if (!res.ok) {
+        // 不重新渲染，保住用户已经填好的内容
+        showError(`❌ ${body.error || '保存失败'}`);
+        return;
+      }
+
+      state = body;
+      editing = false;
+      render();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    boot();
+  </script>
+</body>
+</html>
