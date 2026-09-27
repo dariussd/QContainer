@@ -8,13 +8,19 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { defaultFields, validateFieldDefs, validateRecord } from './config/fields.js';
+import {
+  PORT,
+  RECENT_LIMIT,
+  CONTAINER_CODE_LENGTH,
+  CONTAINER_CODE_PREFIX,
+  CONTAINERS_LIST_DEFAULT_LIMIT,
+  CONTAINERS_LIST_MIN,
+  CONTAINERS_LIST_MAX,
+} from './config/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const db = new Database(path.join(__dirname, 'db.sqlite'));
-
-
-
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -207,7 +213,7 @@ app.get('/api/server', (req, res) => {
 
 // 新建容器：系统生成短码，一旦生成永不变，二维码可以随时补打
 app.post('/api/containers', (req, res) => {
-  const code = nanoid(8); // 8 位短码，生成后永不变
+  const code = `${CONTAINER_CODE_PREFIX}${nanoid(CONTAINER_CODE_LENGTH)}`; // 短码生成后永不变
   stmt.insertContainer.run(code);
   res.status(201).json(summarize(code));
 });
@@ -215,7 +221,8 @@ app.post('/api/containers', (req, res) => {
 // 容器列表：最近创建的在前
 app.get('/api/containers', (req, res) => {
   const raw = Number.parseInt(req.query.limit, 10);
-  const limit = Math.min(Math.max(Number.isFinite(raw) ? raw : 20, 1), 100);
+  const wanted = Number.isFinite(raw) ? raw : CONTAINERS_LIST_DEFAULT_LIMIT;
+  const limit = Math.min(Math.max(wanted, CONTAINERS_LIST_MIN), CONTAINERS_LIST_MAX);
   const containers = stmt.listContainers.all(limit).map((c) => summarize(c.code));
   res.json({ containers });
 });
